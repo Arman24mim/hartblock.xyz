@@ -1,9 +1,9 @@
 #!/bin/bash
 #Script Variables
 HOST='67.211.212.134';
-USER='amarmanx_jonlziabdxyz';
-PASS='jonlziabdxyz123';
-DBNAME='amarmanx_jonlziabdxyz';
+USER='amarmanx_hartblockmim';
+PASS='hartblockmim123';
+DBNAME='amarmanx_hartblockmim';
 PORT_TCP='1194';
 PORT_UDP='53';
 timedatectl set-timezone Asia/Riyadh
