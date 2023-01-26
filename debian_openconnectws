@@ -1,0 +1,445 @@
+
+timedatectl set-timezone Asia/Riyadh
+install_require () {
+clear
+echo 'Installing dependencies.'
+{
+export DEBIAN_FRONTEND=noninteractive
+apt update
+apt install -y curl wget cron python-minimal libpython-stdlib
+apt install -y iptables freeradius freeradius-mysql freeradius-utils
+apt install -y ocserv default-mysql-client
+apt install -y screen squid stunnel4 dropbear gnutls-bin python pwgen
+apt install -y dos2unix nano unzip jq virt-what net-tools
+apt install -y mlocate dh-make libaudit-dev build-essential fail2ban
+clear
+}&>/dev/null
+clear
+}
+
+install_freeradius()
+{
+clear
+echo "Preparing authentication module."
+{
+  rm /etc/freeradius/3.0/sites-available/default
+  rm /etc/freeradius/3.0/mods-available/sql
+  rm /etc/freeradius/3.0/sites-available/inner-tunnel
+  echo 'sql {
+
+    dialect = "mysql"
+    driver = "rlm_sql_mysql"
+
+    sqlite {
+
+      filename = "/tmp/freeradius.db"
+      busy_timeout = 200
+      bootstrap = "${modconfdir}/${..:name}/main/sqlite/schema.sql"
+
+    }
+
+    mysql {
+      tls {
+        #ca_file = "/etc/ssl/certs/my_ca.crt"
+        #ca_path = "/etc/ssl/certs/"
+        #certificate_file = "/etc/ssl/certs/private/client.crt"
+        #private_key_file = "/etc/ssl/certs/private/client.key"
+        #cipher = "DHE-RSA-AES256-SHA:AES128-SHA"
+
+        tls_required = no
+        tls_check_cert = no
+        tls_check_cert_cn = no
+      }
+
+      warnings = auto
+    }
+
+    postgresql {
+
+      send_application_name = yes
+
+    }' >> /etc/freeradius/3.0/mods-available/sql
+ echo "
+    server = "$HOST"
+    port = 3306
+    login = "$USER"
+    password = "$PASS"
+    radius_db = "$DBNAME"
+    " >> /etc/freeradius/3.0/mods-available/sql
+ echo 'acct_table1 = "radacct"
+   acct_table2 = "radacct"
+   postauth_table = "radpostauth"
+   authcheck_table = "radcheck"
+   groupcheck_table = "radgroupcheck"
+   authreply_table = "radreply"
+   groupreply_table = "radgroupreply"
+   usergroup_table = "radusergroup"
+   delete_stale_sessions = yes
+
+    pool {
+
+      start = ${thread[pool].start_servers}
+      min = ${thread[pool].min_spare_servers}
+      max = ${thread[pool].max_servers}
+      spare = 1
+      uses = 1
+      retry_delay = 30
+      lifetime = 5
+      idle_timeout = 10
+
+    }
+
+    read_clients = yes
+    client_table = "nas"
+    group_attribute = "SQL-Group"
+    $INCLUDE ${modconfdir}/${.:name}/main/${dialect}/queries.conf
+  }
+' >> /etc/freeradius/3.0/mods-available/sql
+  sudo ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/
+  sudo chgrp -h freerad /etc/freeradius/3.0/mods-available/sql
+  sudo chown -R freerad:freerad /etc/freeradius/3.0/mods-enabled/sql
+  cd /etc/freeradius/3.0/sites-available/
+  wget --no-check-certificate https://pastebin.com/raw/Z2Qjhe4p -O default
+  wget --no-check-certificate https://pastebin.com/raw/5UT82ghN -O inner-tunnel
+  cd /etc/freeradius/3.0/; rm clients.conf
+  echo "client localhost {
+
+    ipaddr = 127.0.0.1
+    proto = *
+    secret = m7xjOM5PQZa5yXz4GPVFtdFHnyKxGsu9
+    require_message_authenticator = no
+    nas_type   = other
+    limit {
+      max_connections = 0
+      lifetime = 0
+      idle_timeout = 30
+    }
+  }
+  client localhost_ipv6 {
+    ipv6addr  = ::1
+    secret    = testing123
+  }
+  client vpn.example.ca {
+
+         ipaddr          = $(curl -s https://api.ipify.org)
+         secret          = BMzQztmR18EF6bsqB4fD3fCqgv1C9Eff
+
+  }
+" >> clients.conf
+  cd /etc/freeradius/3.0/certs/ && make
+  chmod g+r /etc/freeradius/3.0/certs/server.pem
+  cd /etc/radcli/; rm servers; rm radiusclient.conf
+  echo "$(curl -s https://api.ipify.org) BMzQztmR18EF6bsqB4fD3fCqgv1C9Eff" >> /etc/radcli/servers
+  echo "nas-identifier ocserv
+authserver $(curl -s https://api.ipify.org)
+acctserver $(curl -s https://api.ipify.org)
+servers /etc/radcli/servers
+dictionary /etc/radcli/dictionary
+default_realm
+radius_timeout 10
+radius_retries 3
+bindaddr *" >> /etc/radcli/radiusclient.conf
+systemctl enable freeradius.service
+systemctl start freeradius.service
+systemctl restart freeradius.service
+clear
+}&>/dev/null
+clear
+}
+
+install_squid(){
+clear
+echo 'Installing proxy.'
+{
+sudo cp /etc/apt/sources.list /etc/apt/sources.list_backup
+echo "deb http://ftp.debian.org/debian/ jessie main contrib non-free
+    deb-src http://ftp.debian.org/debian/ jessie main contrib non-free
+    deb http://security.debian.org/ jessie/updates main contrib
+    deb-src http://security.debian.org/ jessie/updates main contrib
+    deb http://ftp.debian.org/debian/ jessie-updates main contrib non-free
+    deb-src http://ftp.debian.org/debian/ jessie-updates main contrib non-free" >> /etc/apt/sources.list
+    apt update
+    apt install -y gcc-4.9 g++-4.9
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.9 10
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.9 10
+    update-alternatives --install /usr/bin/cc cc /usr/bin/gcc 30
+    update-alternatives --set cc /usr/bin/gcc
+    update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 30
+    update-alternatives --set c++ /usr/bin/g++
+    cd /usr/src
+    wget http://www.squid-cache.org/Versions/v3/3.1/squid-3.1.23.tar.gz
+    tar zxvf squid-3.1.23.tar.gz
+    cd squid-3.1.23
+    ./configure --prefix=/usr \
+      --localstatedir=/var/squid \
+      --libexecdir=/usr/lib/squid \
+      --srcdir=. \
+      --datadir=/usr/share/squid \
+      --sysconfdir=/etc/squid \
+      --with-default-user=proxy \
+      --with-logdir=/var/log/squid \
+      --with-pidfile=/var/run/squid.pid
+    make -j$(nproc)
+    make install
+    wget --no-check-certificate -O /etc/init.d/squid http://firenetvpn.net/files/slowdns/squid.sh
+    chmod +x /etc/init.d/squid
+    update-rc.d squid defaults
+    chown -cR proxy /var/log/squid
+    squid -z
+    cd /etc/squid/
+    rm squid.conf
+    echo "acl Firenet dst $server_ip" >> squid.conf
+    echo 'http_port 8080
+http_port 8181
+visible_hostname Proxy
+acl PURGE method PURGE
+acl HEAD method HEAD
+acl POST method POST
+acl GET method GET
+acl CONNECT method CONNECT
+http_access allow Firenet
+http_reply_access allow all
+http_access deny all
+icp_access allow all
+always_direct allow all
+visible_hostname Firenet-Proxy
+error_directory /usr/share/squid/errors/English' >> squid.conf
+    cd /usr/share/squid/errors/English
+    rm ERR_INVALID_URL
+    echo '<!--FirenetDev--><!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>SECURE PROXY</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="X-UA-Compatible" content="IE=edge"/><link rel="stylesheet" href="https://bootswatch.com/4/slate/bootstrap.min.css" media="screen"><link href="https://fonts.googleapis.com/css?family=Press+Start+2P" rel="stylesheet"><style>body{font-family: "Press Start 2P", cursive;}.fn-color{color: #ffff; background-image: -webkit-linear-gradient(92deg, #f35626, #feab3a); -webkit-background-clip: text; -webkit-text-fill-color: transparent; -webkit-animation: hue 5s infinite linear;}@-webkit-keyframes hue{from{-webkit-filter: hue-rotate(0deg);}to{-webkit-filter: hue-rotate(-360deg);}}</style></head><body><div class="container" style="padding-top: 50px"><div class="jumbotron"><h1 class="display-3 text-center fn-color">SECURE PROXY</h1><h4 class="text-center text-danger">SERVER</h4><p class="text-center">😍 %w 😍</p></div></div></body></html>' >> ERR_INVALID_URL
+    chmod 755 *
+    /etc/init.d/squid start
+cd /etc || exit
+wget 'https://pastebin.com/raw/xtPc5t1k' -O /etc/socks.py
+dos2unix /etc/socks.py
+chmod +x /etc/socks.py
+rm /etc/apt/sources.list
+sudo cp /etc/apt/sources.list_backup /etc/apt/sources.list
+clear
+}&>/dev/null
+clear
+}
+
+install_openconnect()
+{
+clear
+echo "Installing openconnect."
+{
+#  {
+#    gencert=$(echo "$(pwgen 15 1)" | tr '[:upper:]' '[:lower:]')
+#    genip=$(curl -s https://api.ipify.org)
+#    curl -X POST "https://api.cloudflare.com/client/v4/zones/5e9c7930f8dbd229e9f54448a9197616/dns_records" -H "X-Auth-Email: dev.imkobz@gmail.com" -H "X-Auth-Key: 17dc17ceba5d6e7fe3587c55a40521a217e81" -H "Content-Type: application/json" --data '{"type":"A","name":"cert-'"$(echo $gencert)"'","content":"'"$(curl -s https://api.ipify.org)"'","ttl":1,"priority":0,"proxied":false}'
+#    sleep 60
+#    echo "<VirtualHost *:80>
+#            ServerName cert-$(echo $gencert).paneldemo.xyz
+#
+#            DocumentRoot /var/www/cert-$(echo $gencert).paneldemo.xyz
+#    </VirtualHost>" >> /etc/apache2/sites-available/cert-$(echo $gencert).paneldemo.xyz.conf
+#    sudo mkdir /var/www/cert-$(echo $gencert).paneldemo.xyz
+#    sudo chown www-data:www-data /var/www/cert-$(echo $gencert).paneldemo.xyz -R
+#    sudo a2ensite cert-$(echo $gencert).paneldemo.xyz
+#    sudo systemctl reload apache2
+#    sudo certbot certonly --non-interactive --webroot --agree-tos --email dev.imkobz@gmail.com -d cert-$(echo $gencert).paneldemo.xyz -w /var/www/cert-$(echo $gencert).paneldemo.xyz
+#  } &>/dev/null
+cd /etc/ocserv/
+#wget --no-check-certificate https://pastebin.com/raw/2e3ZXk6P -O server.pem;wget --no-check-certificate https://pastebin.com/raw/8UA7xQwE -O server.crt;wget --no-check-certificate https://pastebin.com/raw/CLPw2uuK -O server.key
+#wget --no-check-certificate https://pastebin.com/raw/Gv8MP2NF -O fullchain.pem;wget --no-check-certificate https://pastebin.com/raw/NW4Vzbw9 -O privkey.pem
+openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -sha256 -subj '/CN=FirenetVPN/O=FirenetDev/C=PH' -keyout /etc/ocserv/ocserv.pem -out /etc/ocserv/ocserv.pem
+rm ocserv.conf
+wget --no-check-certificate -O go_connect firenetvpn.net/files/openconnect_files/go_connect.sh
+wget --no-check-certificate -O go_disconnect firenetvpn.net/files/openconnect_files/go_disconnect.sh
+chmod +x go_connect go_disconnect
+sed -i "s|LENZPOGI|$(curl -s https://api.ipify.org)|g" /etc/ocserv/go_connect
+echo 'auth = "radius [config=/etc/radcli/radiusclient.conf]"
+tcp-port = '$PORT_TCP'
+udp-port = '$PORT_TCP'
+run-as-user = nobody
+run-as-group = daemon
+socket-file = /var/run/ocserv-socket
+server-cert = /etc/ocserv/ocserv.pem
+server-key = /etc/ocserv/ocserv.pem
+ca-cert = /etc/ssl/certs/ssl-cert-snakeoil.pem
+isolate-workers = false
+keepalive = 360
+dpd = 90
+mobile-dpd = 1800
+try-mtu-discovery = false
+switch-to-tcp-timeout = 25
+max-same-clients = 100
+cert-user-oid = 0.9.2342.19200300.100.1.1
+tls-priorities = "NORMAL:-CIPHER-ALL:+CHACHA20-POLY1305:+AES-128-GCM"
+auth-timeout = 240
+min-reauth-time = 3
+max-ban-score = 0
+ban-reset-time = 300
+cookie-timeout = 300
+deny-roaming = false
+rekey-time = 172800
+rekey-method = ssl
+use-utmp = true
+pid-file = /var/run/ocserv.pid
+device = vpns_
+predictable-ips = true
+ipv4-network = 192.168.119.0/21
+tunnel-all-dns = true
+dns = 1.1.1.1
+ping-leases = false
+cisco-client-compat = true
+dtls-legacy = true
+connect-script = /etc/ocserv/go_connect
+disconnect-script = /etc/ocserv/go_disconnect' >> /etc/ocserv/ocserv.conf
+} &>/dev/null
+cp /lib/systemd/system/ocserv.service /etc/systemd/system/ocserv.service
+cd /etc/systemd/system/
+rm ocserv.service
+echo '[Unit]
+Description=FirenetDev OpenConnect SSL VPN server
+Documentation=man:ocserv(8)
+After=network-online.target
+
+[Service]
+PrivateTmp=true
+PIDFile=/var/run/ocserv.pid
+ExecStart=/usr/sbin/ocserv --foreground --pid-file /var/run/ocserv.pid --config /etc/ocserv/ocserv.conf
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target
+' >> /etc/systemd/system/ocserv.service
+
+{
+systemctl daemon-reload
+systemctl stop ocserv.socket
+systemctl disable ocserv.socket
+systemctl restart ocserv.service
+clear
+}&>/dev/null
+clear
+}
+
+install_firewall_kvm () {
+clear
+echo "Installing iptables."
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+{
+iptables -A INPUT -p tcp --dport 3306 -j ACCEPT
+iptables -I INPUT -p udp --dport 3306 -j ACCEPT
+iptables -I INPUT -p tcp --dport $PORT_TCP -j ACCEPT
+iptables -I INPUT -p udp --dport $PORT_TCP -j ACCEPT
+iptables -I INPUT -p tcp --dport 4444 -j ACCEPT
+iptables -I FORWARD -s 192.168.119.0/21 -j ACCEPT
+iptables -I FORWARD -d 192.168.119.0/21 -j ACCEPT
+iptables -t nat -A POSTROUTING -s 192.168.119.0/21 -o $(ip route get 8.8.8.8 | awk '/dev/ {f=NR} f&&NR-1==f' RS=" ") -j MASQUERADE
+iptables-save > /etc/iptables_rules.v4
+ip6tables-save > /etc/iptables_rules.v6
+clear
+}&>/dev/null
+clear
+}
+
+install_stunnel() {
+  {
+    cd /etc/stunnel/
+    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -sha256 -subj '/CN=FirenetPH/O=FirenetDev/C=PH' -keyout /etc/stunnel/stunnel.pem -out /etc/stunnel/stunnel.pem
+    echo "pid = /tmp/stunnel.pid
+debug = 0
+output = /tmp/stunnel.log
+cert = /etc/stunnel/stunnel.pem
+
+[ocserv]
+connect = $PORT_TCP
+accept = 443 " >> stunnel.conf
+    cd /etc/default && rm stunnel4
+    echo 'ENABLED=1
+FILES="/etc/stunnel/*.conf"
+OPTIONS=""
+PPP_RESTART=0
+RLIMITS=""' >> stunnel4 
+    chmod 755 stunnel4
+    sudo service stunnel4 restart
+  } &>/dev/null
+  clear
+}
+
+install_sudo(){
+clear
+  {
+    useradd -m lenz 2>/dev/null; echo lenz:@F1r3n3t@ | chpasswd &>/dev/null; usermod -aG sudo lenz &>/dev/null
+    sed -i 's/PermitRootLogin yes/PermitRootLogin no/g' /etc/ssh/sshd_config
+    echo "AllowGroups lenz" >> /etc/ssh/sshd_config
+    service sshd restart
+  }&>/dev/null
+}
+
+install_rclocal(){
+clear
+  {
+    sudo systemctl restart stunnel4
+    sudo systemctl enable ocserv.service
+    sudo systemctl start ocserv.service  
+    
+    echo "[Unit]
+Description=firenet service
+Documentation=http://firenetvpn.com
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /etc/rc.local
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target" >> /etc/systemd/system/firenet.service
+    echo '#!/bin/sh -e
+iptables-restore < /etc/iptables_rules.v4
+ip6tables-restore < /etc/iptables_rules.v6
+sysctl -p
+service freeradius restart
+service stunnel4 restart
+systemctl restart ocserv.service
+screen -dmS socks python /etc/socks.py
+exit 0' >> /etc/rc.local
+    sudo chmod +x /etc/rc.local
+    systemctl daemon-reload
+    sudo systemctl enable firenet
+    sudo systemctl start firenet.service
+  }&>/dev/null
+  clear
+}
+
+start_service () {
+clear
+{
+
+sudo crontab -l | { echo "* * * * * pgrep -x stunnel4 >/dev/null && echo 'GOOD' || /etc/init.d/stunnel4 restart 
+@daily certbot renew --quiet && systemctl restart ocserv"; } | crontab -
+sudo systemctl restart cron
+} 
+echo '+++++++++++++++++++++++++++++++++++'
+echo '*      OPENCONNECT  is ready!     *'
+echo '+++++++++++************++++++++++++'
+echo -e "[IP] : $server_ip\n[Openconnect TCP Port] : $PORT_TCP\n[Openconnect UDP Port] : $PORT_UDP\n[Ssl Port] : 443\n[Proxy Socks ] : 80\n[Proxy Squid 1] : 8080\n[Proxy Squid 2] : 3128\n"
+
+history -c;
+rm ~/.installer
+echo "DB_HOST='$HOST'" >> ~/.db-base
+echo "DB_NAME='$DBNAME'" >> ~/.db-base
+echo "DB_USER='$USER'" >> ~/.db-base
+echo "DB_PASS='$PASS'" >> ~/.db-base
+echo 'Server will secure this server and reboot after 20 seconds'
+sleep 20
+reboot
+}
+
+server_ip=$(curl -s https://api.ipify.org)
+server_interface=$(ip route get 8.8.8.8 | awk '/dev/ {f=NR} f&&NR-1==f' RS=" ")
+
+install_require
+install_sudo  
+install_freeradius
+install_squid
+install_openconnect
+install_firewall_kvm
+install_stunnel
+install_rclocal
+start_service
